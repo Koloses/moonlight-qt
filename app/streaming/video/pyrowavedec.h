@@ -1,0 +1,126 @@
+/**
+ * @file pyrowavedec.h
+ * @brief Self-contained IVideoDecoder for the PyroWave GPU wavelet codec.
+ *
+ * Modelled on SLVideoDecoder (a self-contained decoder that owns its own
+ * presentation). Decode is driven by PyroWave::Decoder on a private Vulkan
+ * device; the decoded YCbCr planes are converted to RGBA by a compute shader
+ * (yuv2rgba) and presented via a Vulkan swapchain created on the (Vulkan)
+ * SDL_Window. No CPU readback and no SDL_Renderer.
+ *
+ * Because pyrowave owns presentation (bypassing moonlight's ffmpeg renderers),
+ * it also collects VIDEO_STATS and composites the performance/status overlay
+ * onto its own frames - it implements IOverlayRenderer for that.
+ */
+#pragma once
+
+#include "decoder.h"
+#include "overlaymanager.h"
+
+#include <SDL.h>
+#include <array>
+#include <memory>
+#include <vector>
+
+#include <vulkan/vulkan_raii.hpp>
+#include "pyrowave/pyrowave_decoder.h"
+#include "vk/allocation.h"
+
+#include "pyrowave/pyrowave_vk.h"  // app/streaming/video/pyrowave/pyrowave_vk.h
+
+class PyroWaveVideoDecoder : public IVideoDecoder, public Overlay::IOverlayRenderer {
+public:
+    explicit PyroWaveVideoDecoder(bool testOnly);
+    virtual ~PyroWaveVideoDecoder() override;
+
+    virtual bool initialize(PDECODER_PARAMETERS params) override;
+    virtual bool isHardwareAccelerated() override { return true; }
+    virtual bool isAlwaysFullScreen() override { return false; }
+    virtual bool isHdrSupported() override { return false; }
+    virtual int getDecoderCapabilities() override { return 0; }
+    virtual int getDecoderColorspace() override { return COLORSPACE_REC_709; }
+    virtual int getDecoderColorRange() override { return COLOR_RANGE_LIMITED; }
+    virtual QSize getDecoderMaxResolution() override;
+    virtual int submitDecodeUnit(PDECODE_UNIT du) override;
+    virtual void renderFrameOnMainThread() override {}  // present happens in submitDecodeUnit
+    virtual void setHdrMode(bool) override {}
+    virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override { return false; }
+
+    // IOverlayRenderer: pyrowave polls getUpdatedOverlaySurface() in its present
+    // path, so the notification is only a hint (no work needed here).
+    virtual void notifyOverlayUpdated(Overlay::OverlayType) override {}
+
+private:
+    bool initVulkanResources();         // decode planes + command/fence/semaphores
+    bool initSwapchain();               // surface + swapchain on the SDL window
+    bool initConvertPipeline();         // yuv2rgba compute pipeline + descriptors
+    bool initOverlayPipeline();         // overlay_blend compute pipeline + descriptors
+    bool decodeAndPresent();            // decode -> yuv2rgba -> overlay -> present
+
+    // Stats / performance overlay (mirrors FFmpegVideoDecoder).
+    void addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst);
+    void stringifyVideoStats(VIDEO_STATS& stats, char* output, int length);
+    void updateStatsAndOverlay(PDECODE_UNIT du, uint64_t decodeTimeUs, bool decoded);
+
+    // Overlay compositing.
+    void maybeUploadOverlayTexture();   // pull a fresh overlay surface -> GPU texture
+    void recordOverlayBlend(vk::ImageView targetView, uint32_t targetW, uint32_t targetH);
+
+    bool m_TestOnly;
+    int m_Width = 0;
+    int m_Height = 0;
+    int m_VideoFormat = 0;
+    SDL_Window* m_Window = nullptr;
+
+    std::shared_ptr<pyrowave_vk::context> m_Ctx;
+    std::unique_ptr<PyroWave::Decoder> m_Decoder;
+    std::unique_ptr<PyroWave::DecoderInput> m_Input;
+
+    // Decoded YCbCr planes (separate R8 images: Y full-res, Cb/Cr half-res).
+    image_allocation m_ImgY, m_ImgCb, m_ImgCr;
+    vk::raii::ImageView m_ViewY = nullptr, m_ViewCb = nullptr, m_ViewCr = nullptr;
+    bool m_ImagesInitialized = false;
+
+    vk::raii::CommandPool m_CmdPool = nullptr;
+    vk::raii::CommandBuffer m_Cmd = nullptr;
+    vk::raii::Fence m_Fence = nullptr;
+    vk::raii::Semaphore m_AcquireSem = nullptr;
+    vk::raii::Semaphore m_PresentSem = nullptr;
+
+    // Swapchain presentation on the SDL_WINDOW_VULKAN window.
+    vk::raii::SurfaceKHR m_Surface = nullptr;
+    vk::raii::SwapchainKHR m_Swapchain = nullptr;
+    std::vector<vk::Image> m_SwapImages;
+    vk::Format m_SwapFormat = vk::Format::eUndefined;
+    vk::Extent2D m_SwapExtent {};
+    bool m_DirectPresent = false;                       // yuv2rgba writes the swapchain image directly
+    std::vector<vk::raii::ImageView> m_SwapStorageViews;  // per-image, direct path only
+
+    // yuv2rgba compute pipeline (Y/Cb/Cr sampled images + sampler -> RGBA storage image).
+    image_allocation m_ImgRgba;                         // offscreen RGBA target (blit path)
+    vk::raii::ImageView m_RgbaView = nullptr;
+    vk::raii::Sampler m_Sampler = nullptr;
+    vk::raii::DescriptorSetLayout m_Dsl = nullptr;
+    vk::raii::PipelineLayout m_Pl = nullptr;
+    vk::raii::Pipeline m_Pipe = nullptr;
+    vk::raii::DescriptorPool m_Dpool = nullptr;
+    vk::raii::DescriptorSet m_Dset = nullptr;
+
+    // overlay_blend compute pipeline (overlay texture + sampler -> RGBA storage target).
+    image_allocation m_OverlayImg;
+    vk::raii::ImageView m_OverlayView = nullptr;
+    int m_OverlayW = 0, m_OverlayH = 0;
+    bool m_OverlayValid = false;
+    buffer_allocation m_OverlayStaging;
+    vk::raii::DescriptorSetLayout m_OverlayDsl = nullptr;
+    vk::raii::PipelineLayout m_OverlayPl = nullptr;
+    vk::raii::Pipeline m_OverlayPipe = nullptr;
+    vk::raii::DescriptorPool m_OverlayDpool = nullptr;
+    vk::raii::DescriptorSet m_OverlayDset = nullptr;
+
+    // Performance-overlay stats windows (mirrors FFmpegVideoDecoder).
+    VIDEO_STATS m_ActiveWndVideoStats {};
+    VIDEO_STATS m_LastWndVideoStats {};
+    VIDEO_STATS m_GlobalVideoStats {};
+    uint32_t m_LastFrameNumber = 0;
+};

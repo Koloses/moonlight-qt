@@ -15,6 +15,10 @@
 #include "video/slvid.h"
 #endif
 
+#ifdef HAVE_PYROWAVE
+#include "video/pyrowavedec.h"
+#endif
+
 #ifdef Q_OS_WIN32
 // Scaling the icon down on Win32 looks dreadful, so render at lower res
 #define ICON_SIZE 32
@@ -300,6 +304,22 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
                 "V-sync %s",
                 enableVsync ? "enabled" : "disabled");
 
+#ifdef HAVE_PYROWAVE
+    // PyroWave is decoded only by its own Vulkan decoder; no other decoder can
+    // handle this format, so this branch is terminal for VIDEO_FORMAT_PYROWAVE.
+    if (videoFormat == VIDEO_FORMAT_PYROWAVE) {
+        chosenDecoder = new PyroWaveVideoDecoder(testOnly);
+        if (chosenDecoder->initialize(&params)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave video decoder chosen");
+            return true;
+        }
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to load PyroWave decoder");
+        delete chosenDecoder;
+        chosenDecoder = nullptr;
+        return false;
+    }
+#endif
+
 #ifdef HAVE_SLVIDEO
     chosenDecoder = new SLVideoDecoder(testOnly);
     if (chosenDecoder->initialize(&params)) {
@@ -452,6 +472,24 @@ void Session::getDecoderInfo(SDL_Window* window,
 #if 0 // See AV1 comment at the top of this function
     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
                       window, VIDEO_FORMAT_AV1_MAIN8, 1920, 1080, 60,
+                      false, false, true, decoder)) {
+        isHardwareAccelerated = decoder->isHardwareAccelerated();
+        isFullScreenOnly = decoder->isAlwaysFullScreen();
+        maxResolution = decoder->getDecoderMaxResolution();
+        delete decoder;
+
+        return;
+    }
+#endif
+
+#ifdef HAVE_PYROWAVE
+    // PyroWave is decoded by its own Vulkan (GPU compute) decoder. If it
+    // initializes, the system is hardware-accelerated for our purposes, so
+    // report that (preserving the HDR result probed above) to avoid the bogus
+    // "no hardware decoder" warning on hosts that rely on PyroWave or lack an
+    // ffmpeg hardware decoder for H.264/HEVC/AV1.
+    if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                      window, VIDEO_FORMAT_PYROWAVE, 1920, 1080, 60,
                       false, false, true, decoder)) {
         isHardwareAccelerated = decoder->isHardwareAccelerated();
         isFullScreenOnly = decoder->isAlwaysFullScreen();
@@ -724,6 +762,23 @@ bool Session::initialize(QQuickWindow* qtWindow)
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H265);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264_HIGH8_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264);
+
+#ifdef HAVE_PYROWAVE
+    // PyroWave is an experimental GPU wavelet codec (Sunshine extension). When
+    // built in, advertise it at highest priority so it is preferred whenever the
+    // host supports it. It is removed again here if its decoder can't initialize
+    // (e.g. no suitable Vulkan device).
+    m_SupportedVideoFormats.prepend(VIDEO_FORMAT_PYROWAVE);
+    if (getDecoderAvailability(testWindow,
+                               m_Preferences->videoDecoderSelection,
+                               VIDEO_FORMAT_PYROWAVE,
+                               m_StreamConfig.width,
+                               m_StreamConfig.height,
+                               m_StreamConfig.fps) == DecoderAvailability::None) {
+        m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave decoder unavailable; not advertising it");
+    }
+#endif
 
     switch (m_Preferences->videoCodecConfig)
     {
