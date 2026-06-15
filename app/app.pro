@@ -1,6 +1,12 @@
 QT += core quick network quickcontrols2 svg
 CONFIG += c++17
 
+# PyroWave GPU wavelet codec (vendored). Enabled by default; disable with
+# `qmake CONFIG-=pyrowave`. The `pyrowave {}` block below bumps this TU to C++20
+# and links the codec. (qmake does not inherit CONFIG from the parent project,
+# so it must be set here as well as in moonlight-qt.pro.)
+CONFIG += pyrowave
+
 unix:!macx {
     TARGET = moonlight
 } else {
@@ -514,6 +520,47 @@ DEPENDPATH += $$PWD/../h264bitstream/h264bitstream
 
     INCLUDEPATH += $$PWD/../AntiHooking
     DEPENDPATH += $$PWD/../AntiHooking
+}
+
+# PyroWave GPU wavelet codec (vendored). Opt-in: `qmake CONFIG+=pyrowave`.
+# Links the static pyrowave subproject and exposes its public headers. The
+# decoder TUs that include these headers require C++20 (std::span etc.).
+pyrowave {
+    # The codec public headers require C++20 (std::span etc.). Replace c++17 so
+    # qmake emits a single -std=c++20 rather than conflicting -std flags.
+    CONFIG -= c++17
+    CONFIG += c++20
+    DEFINES += HAVE_PYROWAVE=1
+
+    win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../pyrowave/release/ -lpyrowave
+    else:win32:CONFIG(debug, debug|release): LIBS += -L$$OUT_PWD/../pyrowave/debug/ -lpyrowave
+    else: LIBS += -L$$OUT_PWD/../pyrowave/ -lpyrowave
+
+    # VMA inside libpyrowave references Vulkan entry points directly, so the
+    # final link must pull in the Vulkan loader.
+    win32: LIBS += -lvulkan-1
+    else:  LIBS += -lvulkan
+
+    INCLUDEPATH += \
+        $$PWD/../pyrowave/src \
+        $$PWD/../pyrowave/src/pyrowave \
+        $$PWD/../pyrowave/external
+    DEPENDPATH += $$PWD/../pyrowave/src
+    DEFINES += VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+
+    VULKAN_SDK_ENV = $$(VULKAN_SDK)
+    !isEmpty(VULKAN_SDK_ENV) {
+        win32: INCLUDEPATH += $$VULKAN_SDK_ENV/Include
+        else:  INCLUDEPATH += $$VULKAN_SDK_ENV/include
+    }
+
+    # PyroWave decoder integration sources (Vulkan context + IVideoDecoder).
+    SOURCES += \
+        $$PWD/streaming/video/pyrowavedec.cpp \
+        $$PWD/streaming/video/pyrowave/pyrowave_vk.cpp
+    HEADERS += \
+        $$PWD/streaming/video/pyrowavedec.h \
+        $$PWD/streaming/video/pyrowave/pyrowave_vk.h
 }
 
 unix:!macx: {
