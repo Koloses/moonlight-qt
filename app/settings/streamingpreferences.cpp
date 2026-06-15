@@ -413,5 +413,11 @@ int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool
         resolutionFactor *= 2;
     }
 
-    return qRound(resolutionFactor * frameRateFactor) * 1000;
+    // PyroWave is an intra-only wavelet codec: every frame is a keyframe, so it
+    // needs far more bitrate than inter-frame codecs (H.264/HEVC/AV1) for
+    // comparable quality. This is a PyroWave-focused fork, so scale the baseline
+    // up 7.5x: 720p60 -> ~75 Mbps, 1080p60 -> ~150, 1440p60 -> ~300, 4K60 -> ~600.
+    const float PYROWAVE_BITRATE_MULTIPLIER = 7.5f;
+
+    return qRound(resolutionFactor * frameRateFactor * PYROWAVE_BITRATE_MULTIPLIER) * 1000;
 }

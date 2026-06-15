@@ -693,7 +693,9 @@ Flickable {
 
                         stepSize: 500
                         from : 500
-                        to: StreamingPreferences.unlockBitrate ? 500000 : 150000
+                        // 1 Gbps ceiling so PyroWave's high defaults (e.g. ~600 Mbps at
+                        // 4K60, ~850 at 4K120) fit without clamping.
+                        to: 1000000
 
                         snapMode: "SnapOnRelease"
                         width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
