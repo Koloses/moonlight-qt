@@ -13,17 +13,24 @@ TARGET = pyrowave
 # DeviceDispatcher asserts are gated on NDEBUG. This codec shares vk::raii
 # objects (vk::raii::Device and its dispatcher) with the app across the static
 # library boundary, so it MUST be compiled with the SAME NDEBUG state as the
-# app -- otherwise the dispatcher is misread at runtime and
-# `getDispatcher()` aborts on `getVkHeaderVersion() == VK_HEADER_VERSION`
-# (decoder init crash). The app is shipped/built as a release (NDEBUG) build,
-# but this subproject otherwise builds in debug mode when driven from the
-# top-level debug_and_release project, so force NDEBUG here to keep the codec on
-# the same (release) vk::raii layout as the app. (Mirrors Sunshine, which sets
-# NDEBUG on its vendored pyrowave target for the same reason.)
-DEFINES += NDEBUG
+# app -- otherwise the dispatcher is misread at runtime and `getDispatcher()`
+# aborts on `getVkHeaderVersion() == VK_HEADER_VERSION` (decoder init crash).
+# So mirror the app exactly: NDEBUG in release builds, asserts in debug builds.
+CONFIG(release, debug|release): DEFINES += NDEBUG
 
 # Vulkan headers (vulkan_raii.hpp, vk_mem_alloc.h needs vulkan/vulkan.h).
-# Prefer the Vulkan SDK when present; otherwise rely on system headers.
+#
+# CRITICAL (cross-module vk::raii ABI): this codec shares vk::raii::Device + its
+# DeviceDispatcher with the app across the static-library boundary, so it MUST
+# resolve Vulkan headers in the SAME order as app.pro. On Windows that means the
+# bundled set fetched by setup-deps.ps1 (libs/windows/include) FIRST, with the
+# Vulkan SDK only as a fallback. A different header version here vs. the app would
+# skew the dispatcher layout and crash decoder init on connect.
+win32 {
+    contains(QT_ARCH, x86_64): INCLUDEPATH += $$PWD/../libs/windows/include/x64
+    contains(QT_ARCH, arm64):  INCLUDEPATH += $$PWD/../libs/windows/include/arm64
+    INCLUDEPATH += $$PWD/../libs/windows/include
+}
 VULKAN_SDK_ENV = $$(VULKAN_SDK)
 !isEmpty(VULKAN_SDK_ENV) {
     win32: INCLUDEPATH += $$VULKAN_SDK_ENV/Include

@@ -550,8 +550,22 @@ pyrowave {
 
     VULKAN_SDK_ENV = $$(VULKAN_SDK)
     !isEmpty(VULKAN_SDK_ENV) {
+        # CRITICAL (cross-module vk::raii ABI): the app module and the codec static
+        # lib (pyrowave.pro) share vk::raii::Device + its DeviceDispatcher across the
+        # library boundary, so BOTH must compile against the SAME Vulkan headers. If
+        # they don't, a device.create*() call in the codec indexes the wrong dispatcher
+        # slot (observed: createComputePipeline landing on vkCreateFramebuffer) and
+        # crashes on connect -- invisible to the intra-TU getVkHeaderVersion() assert.
+        #
+        # On Windows the canonical headers are the bundled set fetched by
+        # setup-deps.ps1 into libs/windows/include (added to INCLUDEPATH earlier, so it
+        # already wins the search). The Vulkan SDK is APPENDED only as a fallback for
+        # anything the bundled set lacks. pyrowave.pro uses the identical
+        # bundled-first / SDK-fallback order, keeping the dispatcher layout consistent.
         win32: INCLUDEPATH += $$VULKAN_SDK_ENV/Include
         else:  INCLUDEPATH += $$VULKAN_SDK_ENV/include
+        # vulkan-1.lib (the Vulkan loader import library) lives in the SDK's Lib dir.
+        win32: LIBS += -L$$VULKAN_SDK_ENV/Lib
     }
 
     # PyroWave decoder integration sources (Vulkan context + IVideoDecoder).
