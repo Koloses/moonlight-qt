@@ -2167,7 +2167,13 @@ bool Decoder::decode(vk::raii::CommandBuffer & cmd, DecoderInput & input, const 
 			        input.dequant_staging,
 			        input.dequant_offset_buffer,
 			        vk::BufferCopy{
-			                .size = vk::WholeSize,
+			                // VK_WHOLE_SIZE is illegal in a VkBufferCopy region (some
+			                // drivers tolerate it, NVIDIA does not - it rejects the copy
+			                // so the dequant offsets are never uploaded and no frame ever
+			                // decodes). Both buffers are allocated at exactly
+			                // block_count_32x32 * sizeof(uint32_t) (see DecoderInput ctor),
+			                // so copy that explicit byte count.
+			                .size = vk::DeviceSize(block_count_32x32) * sizeof(uint32_t),
 			        });
 		std::vector<vk::ImageMemoryBarrier> image_barriers;
 		if (input.need_image_transition)
