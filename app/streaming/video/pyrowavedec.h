@@ -80,6 +80,7 @@ private:
     image_allocation m_ImgY, m_ImgCb, m_ImgCr;
     vk::raii::ImageView m_ViewY = nullptr, m_ViewCb = nullptr, m_ViewCr = nullptr;
     bool m_ImagesInitialized = false;
+    bool m_FirstFramePresented = false;                 // gate the cold-start acquire out of phase pacing
 
     vk::raii::CommandPool m_CmdPool = nullptr;
     vk::raii::CommandBuffer m_Cmd = nullptr;

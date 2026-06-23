@@ -554,6 +554,15 @@ bool PyroWaveVideoDecoder::decodeAndPresent() {
     auto &device = m_Ctx->device();
 
     uint32_t idx = 0;
+    // Phase-offset pacing (pyrofling-style): the time blocked in acquireNextImage is the
+    // display-clock backpressure - how long we waited for the compositor/scanout to free a
+    // swapchain image. Under a vsync-gated present mode this grows when the host produces
+    // frames faster than this client can display them; under IMMEDIATE it stays ~0. We feed
+    // it to the host as the phase offset (positive => host should slow its capture cadence).
+    // pyrofling's server controller integrates with a deadband and recenters toward the
+    // requested rate, so a ~0 signal is inert and this can never push the host below its
+    // base FPS - it only trims overproduction.
+    uint64_t acquireStartUs = LiGetMicroseconds();
     try {
         auto [res, i] = m_Swapchain.acquireNextImage(UINT64_MAX, *m_AcquireSem, nullptr);
         if (res != vk::Result::eSuccess && res != vk::Result::eSuboptimalKHR) {
@@ -563,6 +572,15 @@ bool PyroWaveVideoDecoder::decodeAndPresent() {
     } catch (const vk::SystemError &e) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "pyrowave: acquireNextImage failed: %s", e.what());
         return true;
+    }
+    if (!m_FirstFramePresented) {
+        // Skip the cold-start acquire (no steady state yet); arm for subsequent frames.
+        m_FirstFramePresented = true;
+    } else {
+        int64_t blockUs = (int64_t) (LiGetMicroseconds() - acquireStartUs);
+        if (blockUs < 0) blockUs = 0;
+        if (blockUs > 50000) blockUs = 50000;  // clamp pathological stalls (~50 ms)
+        LiSendPhaseOffset((int) blockUs);
     }
 
     // Refresh the overlay texture (own submit) before we start the frame's cmd buffer.
